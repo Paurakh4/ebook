@@ -110,21 +110,20 @@ export default function BookDetails() {
         for (let attempt = 0; attempt < 8; attempt += 1) {
             const confirmRes = await confirmStripeSubscription(subscriptionId, paymentIntentId);
             if (confirmRes.success && confirmRes.data?.isSubscribed) {
+                await updateUser({
+                    isSubscribed: true,
+                    subscriptionExpiry: confirmRes.data.subscriptionExpiry,
+                    stripe: {
+                        ...(user?.stripe || {}),
+                        status: confirmRes.data.status || 'active',
+                    },
+                });
+
                 const profileRes = await getProfile();
-                if (profileRes.success && profileRes.user) {
+                if (profileRes.success && profileRes.user?.isSubscribed) {
                     await updateUser(profileRes.user);
-                } else {
-                    await updateUser({
-                        isSubscribed: true,
-                        subscriptionExpiry: confirmRes.data.subscriptionExpiry,
-                        stripe: {
-                            ...(user?.stripe || {}),
-                            status: confirmRes.data.status || 'active',
-                        },
-                    });
                 }
 
-                setHasPendingPremiumAccess(false);
                 setSubscriptionFeedback('Premium unlocked. Your full book is ready.');
 
                 return true;
@@ -133,7 +132,6 @@ export default function BookDetails() {
             const profileRes = await getProfile();
             if (profileRes.success && profileRes.user?.isSubscribed) {
                 await updateUser(profileRes.user);
-                setHasPendingPremiumAccess(false);
                 setSubscriptionFeedback('Premium unlocked. Your full book is ready.');
                 return true;
             }
@@ -201,7 +199,6 @@ export default function BookDetails() {
 
             if (unlockedBook) {
                 readableBook = unlockedBook;
-                setHasPendingPremiumAccess(false);
                 setSubscriptionFeedback('Premium unlocked. Your full book is ready.');
             } else {
                 setSubscriptionFeedback('Payment received. Your book is still syncing. Please tap again in a moment.');
@@ -318,7 +315,6 @@ export default function BookDetails() {
                 if (refreshedBook) {
                     setBook(refreshedBook);
                 }
-                setHasPendingPremiumAccess(false);
                 setSubscriptionFeedback('Premium unlocked. You can start reading right away.');
                 Alert.alert("🎉 Success!", "Your premium subscription is now active. Enjoy unlimited reading!");
                 return;
