@@ -120,6 +120,22 @@ export const getBookById = async (id: string) => {
     }
 };
 
+export const requestBookAccess = async (id: string) => {
+    try {
+        const response = await apiClient.post(`${API_ENDPOINTS.GET_BOOKS}/${id}/access`);
+        if (response.data.success) {
+            return { success: true, data: response.data.data };
+        }
+        return { success: false, message: response.data.message };
+    } catch (error: any) {
+        console.error('Request Book Access Error:', error.response?.data || error.message);
+        return {
+            success: false,
+            message: error.response?.data?.message || 'Failed to open book access'
+        };
+    }
+};
+
 export const saveHighlight = async (highlightData: { bookId: string, text: string, rangeData: any, color?: string }) => {
     try {
         const response = await apiClient.post(API_ENDPOINTS.HIGHLIGHT, highlightData);

@@ -1,5 +1,6 @@
 import {
   addBookService,
+  consumeBookAccessService,
   getAllBooksService,
   updateBookService,
   deleteBookService,
@@ -78,6 +79,24 @@ export const getBookByIdController = async (req, res, next) => {
     );
   } catch (error) {
     console.error("Error in getBookByIdController:", error);
+    next(error);
+  }
+};
+
+export const consumeBookAccessController = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const book = await consumeBookAccessService(id, req.user);
+    successResponse(
+      {
+        success: true,
+        message: "Book access checked successfully",
+        data: book,
+      },
+      res,
+    );
+  } catch (error) {
+    console.error("Error in consumeBookAccessController:", error);
     next(error);
   }
 };

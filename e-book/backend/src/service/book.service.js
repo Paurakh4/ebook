@@ -39,7 +39,7 @@ export const addBookService = async (bookData) => {
     }
 };
 
-export const getBookByIdService = async (bookId, user) => {
+const getBookAccessState = async (bookId, user, { consumeFreeAccess = false } = {}) => {
     try {
         const book = await bookModel.findById(bookId);
         if (!book) {
@@ -79,11 +79,12 @@ export const getBookByIdService = async (bookId, user) => {
                     bookObj.isLocked = true;
                     return bookObj;
                 } else {
-                    // Add to readBooks
-                    console.log(`[Book Service] Allowing new book read for ${fullUser.email}`);
-                    if (!fullUser.readBooks) fullUser.readBooks = [];
-                    fullUser.readBooks.push(bookId);
-                    await fullUser.save();
+                    if (consumeFreeAccess) {
+                        console.log(`[Book Service] Consuming free read for ${fullUser.email}`);
+                        if (!fullUser.readBooks) fullUser.readBooks = [];
+                        fullUser.readBooks.push(bookId);
+                        await fullUser.save();
+                    }
                     return bookObj;
                 }
             }
@@ -95,6 +96,12 @@ export const getBookByIdService = async (bookId, user) => {
         throw error;
     }
 };
+
+export const getBookByIdService = async (bookId, user) =>
+    getBookAccessState(bookId, user, { consumeFreeAccess: false });
+
+export const consumeBookAccessService = async (bookId, user) =>
+    getBookAccessState(bookId, user, { consumeFreeAccess: true });
 
 export const getAllBooksService = async (genre, isDiscovery, limit, search, source, page = 1) => {
     try {

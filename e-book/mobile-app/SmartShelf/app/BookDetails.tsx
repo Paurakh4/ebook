@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useStripe } from '@stripe/stripe-react-native';
-import { getBookById, deleteBook, toggleFavorite } from '../components/services/bookServices';
+import { getBookById, deleteBook, requestBookAccess, toggleFavorite } from '../components/services/bookServices';
 import { API_BASE_URL } from '../components/constants/api';
 import { useAuth } from '@/hooks/use-auth';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -200,12 +200,29 @@ export default function BookDetails() {
     const handleRead = async () => {
         if (!book) return;
 
-        if (isBookLocked) {
+        let readableBook = book;
+
+        if (!hasPremiumAccess) {
+            const accessRes = await requestBookAccess(book._id);
+            if (!accessRes.success || !accessRes.data) {
+                Alert.alert('Error', accessRes.message || 'Failed to verify book access');
+                return;
+            }
+
+            readableBook = accessRes.data;
+            setBook(accessRes.data);
+
+            if (accessRes.data.isLocked) {
+                setIsSubscriptionModalVisible(true);
+                return;
+            }
+        }
+
+        if (isBookLocked && !hasPremiumAccess) {
             setIsSubscriptionModalVisible(true);
             return;
         }
 
-        let readableBook = book;
         let finalUrl = getReadableUrl(readableBook);
 
         if (!finalUrl && hasPremiumAccess) {

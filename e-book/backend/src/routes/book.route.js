@@ -1,6 +1,7 @@
 import express from "express";
 import {
     addBookController,
+    consumeBookAccessController,
     getAllBooksController,
     updateBookController,
     deleteBookController,
@@ -28,6 +29,7 @@ router.get("/", verifyToken, getAllBooksController);
 router.get("/external/gutenberg", verifyToken, getGutenbergBooksController);
 router.get("/external/openlibrary", verifyToken, getOpenLibraryBooksController);
 
+router.post("/:id/access", verifyToken, consumeBookAccessController);
 router.get("/:id", verifyToken, getBookByIdController);
 
 // Bulk seed discovery books (Admin only)
