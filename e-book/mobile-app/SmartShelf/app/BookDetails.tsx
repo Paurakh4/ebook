@@ -39,12 +39,15 @@ export default function BookDetails() {
     const router = useRouter();
     const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
     const fetchBookDetails = async () => {
         if (!id) return;
         try {
             const res = await getBookById(id as string);
             if (res.success) {
                 setBook(res.data);
+                return res.data;
             } else {
                 const errorMsg = res.message || "Book not found";
                 Alert.alert("Notice", errorMsg);
@@ -62,6 +65,46 @@ export default function BookDetails() {
         } finally {
             setLoading(false);
         }
+
+        return null;
+    };
+
+    const synchronizeSubscriptionActivation = async (
+        subscriptionId: string,
+        paymentIntentId?: string,
+    ) => {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const confirmRes = await confirmStripeSubscription(subscriptionId, paymentIntentId);
+            if (confirmRes.success && confirmRes.data?.isSubscribed) {
+                const profileRes = await getProfile();
+                if (profileRes.success && profileRes.user) {
+                    await updateUser(profileRes.user);
+                } else {
+                    await updateUser({
+                        isSubscribed: true,
+                        subscriptionExpiry: confirmRes.data.subscriptionExpiry,
+                        stripe: {
+                            ...(user?.stripe || {}),
+                            status: confirmRes.data.status || 'active',
+                        },
+                    });
+                }
+
+                return true;
+            }
+
+            const profileRes = await getProfile();
+            if (profileRes.success && profileRes.user?.isSubscribed) {
+                await updateUser(profileRes.user);
+                return true;
+            }
+
+            if (attempt < 3) {
+                await delay(1200);
+            }
+        }
+
+        return false;
     };
 
     useEffect(() => {
@@ -185,32 +228,21 @@ export default function BookDetails() {
                 return;
             }
 
-            // Payment sheet completed — confirm with backend.
-            // The backend will check the PaymentIntent status directly to resolve
-            // the race condition where subscription.status is still 'incomplete'.
-            const confirmRes = await confirmStripeSubscription(prepareRes.data.subscriptionId);
+            const subscriptionActivated = await synchronizeSubscriptionActivation(
+                prepareRes.data.subscriptionId,
+                prepareRes.data.paymentIntentId,
+            );
+            const refreshedBook = await fetchBookDetails();
 
-            if (confirmRes.success && confirmRes.data?.isSubscribed) {
-                // Subscription confirmed active — update user context with confirmed state
-                await updateUser({
-                    isSubscribed: true,
-                    subscriptionExpiry: confirmRes.data.subscriptionExpiry,
-                    stripe: { status: "active" },
-                });
-            } else {
-                // Fallback: fetch fresh profile from server to get latest subscription state
-                const profileRes = await getProfile();
-                if (profileRes.success) {
-                    await updateUser(profileRes.user);
-                } else {
-                    await updateUser({ isSubscribed: true });
-                }
+            if (subscriptionActivated || (refreshedBook && !refreshedBook.isLocked)) {
+                Alert.alert("🎉 Success!", "Your premium subscription is now active. Enjoy unlimited reading!");
+                return;
             }
 
-            // Re-fetch book details — the backend now has user.isSubscribed=true in DB
-            // so getBookByIdService will return the book without isLocked
-            await fetchBookDetails();
-            Alert.alert("🎉 Success!", "Your premium subscription is now active. Enjoy unlimited reading!");
+            Alert.alert(
+                "Payment Received",
+                "Your payment went through, but access is still activating. Please reopen this book in a moment.",
+            );
         } catch (err) {
             console.error("Subscription error:", err);
             Alert.alert("Error", "Failed to connect to Stripe. Please try again.");

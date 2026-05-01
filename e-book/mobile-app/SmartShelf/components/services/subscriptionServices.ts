@@ -27,11 +27,18 @@ export const prepareStripeSubscription = async () => {
   }
 };
 
-export const confirmStripeSubscription = async (subscriptionId: string) => {
+export const confirmStripeSubscription = async (
+  subscriptionId: string,
+  paymentIntentId?: string,
+) => {
   try {
-    const response = await apiClient.post(API_ENDPOINTS.STRIPE_SUBSCRIPTION_CONFIRM, {
-      subscriptionId,
-    });
+    const response = await apiClient.post(
+      API_ENDPOINTS.STRIPE_SUBSCRIPTION_CONFIRM,
+      {
+        subscriptionId,
+        ...(paymentIntentId ? { paymentIntentId } : {}),
+      },
+    );
     return { success: true, data: response.data.data };
   } catch (error: any) {
     return {

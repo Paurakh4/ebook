@@ -41,8 +41,12 @@ export const prepareSubscriptionController = async (req, res, next) => {
 
 export const confirmSubscriptionController = async (req, res, next) => {
   try {
-    const { subscriptionId } = req.body;
-    const data = await confirmSubscriptionService(req.user.userId, subscriptionId);
+    const { subscriptionId, paymentIntentId } = req.body;
+    const data = await confirmSubscriptionService(
+      req.user.userId,
+      subscriptionId,
+      paymentIntentId,
+    );
     successResponse(
       {
         success: true,

@@ -16,6 +16,7 @@ import successResponse from "../utils/success.response.js";
 import userModel from "../model/user.model.js";
 import { AppError } from "../utils/error.js";
 import { getFreeBookLimit, getSubscriptionSnapshot } from "../service/subscription.service.js";
+import { refreshSubscriptionStateFromStripeService } from "../service/stripe.service.js";
 
 export const createUserController = async (req, res, next) => {
     try {
@@ -99,7 +100,13 @@ export const getMyProfileController = async (req, res, next) => {
             throw new AppError("User not found", 404);
         }
 
-        const subscription = getSubscriptionSnapshot(user);
+        let subscription = getSubscriptionSnapshot(user);
+        if (!subscription.isActive && user?.stripe?.subscriptionId) {
+            const refreshedState = await refreshSubscriptionStateFromStripeService(user);
+            user = refreshedState.user;
+            subscription = refreshedState.subscription;
+        }
+
         user.isSubscribed = subscription.isActive;
         user.subscriptionExpiry = subscription.isActive ? subscription.expiryDate : null;
 

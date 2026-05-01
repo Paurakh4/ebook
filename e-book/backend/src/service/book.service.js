@@ -10,6 +10,7 @@ import {
     getFreeBookLimit,
     getSubscriptionSnapshot,
 } from "./subscription.service.js";
+import { refreshSubscriptionStateFromStripeService } from "./stripe.service.js";
 
 export const addBookService = async (bookData) => {
     try {
@@ -56,7 +57,11 @@ export const getBookByIdService = async (bookId, user) => {
             const fullUser = await userModel.findById(user.userId);
             if (!fullUser) throw new AppError("User not found", 404);
 
-            const subscription = getSubscriptionSnapshot(fullUser);
+            let subscription = getSubscriptionSnapshot(fullUser);
+            if (!subscription.isActive && fullUser?.stripe?.subscriptionId) {
+                const refreshedState = await refreshSubscriptionStateFromStripeService(fullUser);
+                subscription = refreshedState.subscription;
+            }
             const isSubscribed = subscription.isActive;
 
             const FREE_BOOK_LIMIT = getFreeBookLimit();

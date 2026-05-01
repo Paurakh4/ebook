@@ -9,6 +9,38 @@ import {
 
 let stripeClient;
 
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "past_due"]);
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getCustomerId = (customer) => {
+  if (!customer) {
+    return "";
+  }
+
+  return typeof customer === "string" ? customer : customer.id || "";
+};
+
+const waitForSubscriptionSettlement = async (stripe, subscriptionId, maxAttempts = 4) => {
+  let latestSubscription = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    latestSubscription = await stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ["latest_invoice"],
+    });
+
+    if (ACTIVE_SUBSCRIPTION_STATUSES.has(latestSubscription.status)) {
+      return latestSubscription;
+    }
+
+    if (attempt < maxAttempts - 1) {
+      await delay(1200);
+    }
+  }
+
+  return latestSubscription;
+};
+
 const getStripeClient = () => {
   if (!process.env.STRIPE_SECRET_KEY) {
     throw new AppError("Stripe secret key is not configured", 500);
@@ -334,6 +366,7 @@ export const prepareSubscriptionService = async (userId) => {
     alreadySubscribed: false,
     customerId,
     subscriptionId: subscription.id,
+    paymentIntentId: paymentIntent.id,
     ephemeralKey: ephemeralKey.secret,
     clientSecret: paymentIntent.client_secret,
     publishableKey: getPublishableKey(),
@@ -342,7 +375,11 @@ export const prepareSubscriptionService = async (userId) => {
 };
 
 
-export const confirmSubscriptionService = async (userId, subscriptionId) => {
+export const confirmSubscriptionService = async (
+  userId,
+  subscriptionId,
+  paymentIntentId,
+) => {
   if (!subscriptionId) {
     throw new AppError("Subscription ID is required", 400);
   }
@@ -364,6 +401,9 @@ export const confirmSubscriptionService = async (userId, subscriptionId) => {
 
   console.log("[Stripe Confirm] Subscription status:", subscription.status);
 
+  const customerId = getCustomerId(subscription.customer);
+  const explicitPaymentIntentId = String(paymentIntentId || "").trim();
+
   // Handle the race condition: presentPaymentSheet() completes before Stripe
   // transitions the subscription from 'incomplete' → 'active'.
   // We check the payment intent status directly to confirm payment succeeded.
@@ -371,8 +411,20 @@ export const confirmSubscriptionService = async (userId, subscriptionId) => {
     const invoice = subscription.latest_invoice;
     let paymentSucceeded = false;
 
+    if (explicitPaymentIntentId) {
+      const paymentIntent = await stripe.paymentIntents.retrieve(explicitPaymentIntentId);
+      const paymentIntentCustomerId = getCustomerId(paymentIntent.customer);
+
+      if (paymentIntentCustomerId && paymentIntentCustomerId !== customerId) {
+        throw new AppError("Payment intent does not belong to this subscription", 403);
+      }
+
+      console.log("[Stripe Confirm] PaymentIntent status (explicit):", paymentIntent.status);
+      paymentSucceeded = paymentIntent.status === "succeeded";
+    }
+
     // Strategy 1: Check invoice.payment_intent if present (legacy Stripe API)
-    if (invoice && typeof invoice === "object" && invoice.payment_intent) {
+    if (!paymentSucceeded && invoice && typeof invoice === "object" && invoice.payment_intent) {
       const pi = typeof invoice.payment_intent === "string"
         ? await stripe.paymentIntents.retrieve(invoice.payment_intent)
         : invoice.payment_intent;
@@ -382,10 +434,6 @@ export const confirmSubscriptionService = async (userId, subscriptionId) => {
 
     // Strategy 2: New Stripe API — find PaymentIntent via customer (no invoice.payment_intent)
     if (!paymentSucceeded) {
-      const customerId = typeof subscription.customer === "string"
-        ? subscription.customer
-        : subscription.customer?.id;
-
       const customerPIs = await stripe.paymentIntents.list({
         customer: customerId,
         limit: 5,
@@ -413,23 +461,38 @@ export const confirmSubscriptionService = async (userId, subscriptionId) => {
       // The Stripe webhook will eventually sync the real subscription.status.
       console.log("[Stripe Confirm] Payment confirmed — force-activating subscription state.");
 
-      const currentPeriodEnd = subscription.current_period_end
-        ? new Date(subscription.current_period_end * 1000)
-        : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // fallback: +30 days
+      const settledSubscription = await waitForSubscriptionSettlement(
+        stripe,
+        subscription.id,
+      );
 
-      user.stripe = {
-        customerId: typeof subscription.customer === "string"
-          ? subscription.customer
-          : subscription.customer?.id || user?.stripe?.customerId || "",
-        subscriptionId: subscription.id,
-        status: "active",
-        currentPeriodEnd,
-      };
-      user.isSubscribed = true;
-      user.subscriptionExpiry = currentPeriodEnd;
+      if (
+        ACTIVE_SUBSCRIPTION_STATUSES.has(settledSubscription.status) &&
+        settledSubscription.current_period_end
+      ) {
+        applySubscriptionState(user, settledSubscription);
+        subscription = settledSubscription;
+      } else {
+        const currentPeriodEnd = settledSubscription.current_period_end
+          ? new Date(settledSubscription.current_period_end * 1000)
+          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        user.stripe = {
+          customerId: customerId || user?.stripe?.customerId || "",
+          subscriptionId: subscription.id,
+          status: ACTIVE_SUBSCRIPTION_STATUSES.has(settledSubscription.status)
+            ? settledSubscription.status
+            : "active",
+          currentPeriodEnd,
+        };
+        user.isSubscribed = true;
+        user.subscriptionExpiry = currentPeriodEnd;
+        subscription = settledSubscription;
+      }
+
       await user.save();
 
-      console.log("[Stripe Confirm] User saved as subscribed. Expiry:", currentPeriodEnd);
+      console.log("[Stripe Confirm] User saved as subscribed. Expiry:", user.subscriptionExpiry);
     } else {
       // Payment genuinely not yet completed — apply whatever Stripe says
       console.log("[Stripe Confirm] Payment not confirmed yet, applying current subscription state.");
@@ -448,6 +511,52 @@ export const confirmSubscriptionService = async (userId, subscriptionId) => {
     subscriptionExpiry: user.subscriptionExpiry,
     status: user?.stripe?.status || "",
   };
+};
+
+
+export const refreshSubscriptionStateFromStripeService = async (user) => {
+  if (!user?.stripe?.subscriptionId) {
+    return {
+      user,
+      refreshed: false,
+      subscription: getSubscriptionSnapshot(user),
+    };
+  }
+
+  try {
+    const stripe = getStripeClient();
+    const subscription = await stripe.subscriptions.retrieve(user.stripe.subscriptionId, {
+      expand: ["latest_invoice"],
+    });
+
+    applySubscriptionState(user, subscription);
+    await user.save();
+
+    console.log("[Stripe Refresh] Subscription synchronized from Stripe:", {
+      userId: String(user._id),
+      subscriptionId: subscription.id,
+      status: subscription.status,
+    });
+
+    return {
+      user,
+      refreshed: true,
+      subscription: getSubscriptionSnapshot(user),
+    };
+  } catch (error) {
+    console.warn("[Stripe Refresh] Failed to synchronize subscription:", {
+      userId: String(user?._id || ""),
+      subscriptionId: user?.stripe?.subscriptionId || "",
+      message: error.message,
+    });
+
+    return {
+      user,
+      refreshed: false,
+      subscription: getSubscriptionSnapshot(user),
+      error,
+    };
+  }
 };
 
 
@@ -496,6 +605,7 @@ export const handleStripeWebhookService = async (signature, rawBody) => {
 
     const user = await userModel.findOne({ "stripe.customerId": customerId });
     if (!user) {
+      console.warn("[Stripe Webhook] No user found for customer:", customerId);
       return;
     }
 
