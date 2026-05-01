@@ -41,6 +41,7 @@ export default function BookDetails() {
     const { user, updateUser } = useAuth();
     const router = useRouter();
     const { initPaymentSheet, presentPaymentSheet } = useStripe();
+    const optimisticSubscriptionExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
     const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const hasPremiumAccess = Boolean(user?.isSubscribed) || hasPendingPremiumAccess;
@@ -323,6 +324,16 @@ export default function BookDetails() {
                 return;
             }
 
+            await updateUser({
+                isSubscribed: true,
+                subscriptionExpiry: optimisticSubscriptionExpiry,
+                stripe: {
+                    ...(user?.stripe || {}),
+                    customerId: prepareRes.data.customerId || user?.stripe?.customerId || '',
+                    subscriptionId: prepareRes.data.subscriptionId || user?.stripe?.subscriptionId || '',
+                    status: 'active',
+                },
+            });
             applyImmediateUnlockUi('Payment confirmed. Unlocking your books now...');
             setPaymentStatusLabel('Unlocking your books...');
 
@@ -342,6 +353,16 @@ export default function BookDetails() {
             }
 
             applyImmediateUnlockUi('Payment received. Your access is syncing now.');
+            await updateUser({
+                isSubscribed: true,
+                subscriptionExpiry: optimisticSubscriptionExpiry,
+                stripe: {
+                    ...(user?.stripe || {}),
+                    customerId: prepareRes.data.customerId || user?.stripe?.customerId || '',
+                    subscriptionId: prepareRes.data.subscriptionId || user?.stripe?.subscriptionId || '',
+                    status: 'active',
+                },
+            });
             Alert.alert(
                 "Payment Received",
                 "Your payment went through. We are still syncing your unlocked access, but the paywall is removed and the app will keep trying.",
