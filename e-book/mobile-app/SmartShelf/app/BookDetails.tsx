@@ -103,6 +103,28 @@ export default function BookDetails() {
         return null;
     };
 
+    const getReadableUrl = (targetBook: any) => {
+        if (!targetBook) {
+            return '';
+        }
+
+        const pdfUrl = targetBook.pdfUrl;
+        if (pdfUrl && pdfUrl.startsWith('http')) {
+            return pdfUrl;
+        }
+
+        if (pdfUrl) {
+            const cleanPath = pdfUrl.replace(/\\/g, '/').replace(/^\//, '');
+            return `${IMAGE_BASE_URL}/${cleanPath}`;
+        }
+
+        if (targetBook.isDiscovery || targetBook.isbn?.startsWith('GUT-')) {
+            return `https://www.gutenberg.org/ebooks/${targetBook.externalId || ''}.html.images`;
+        }
+
+        return '';
+    };
+
     const synchronizeSubscriptionActivation = async (
         subscriptionId: string,
         paymentIntentId?: string,
@@ -184,14 +206,9 @@ export default function BookDetails() {
         }
 
         let readableBook = book;
-        const needsUnlockedRefresh =
-            hasPremiumAccess &&
-            !readableBook.isDiscovery &&
-            !readableBook.isbn?.startsWith('GUT-') &&
-            !readableBook.isbn?.startsWith('OL-') &&
-            (!readableBook.pdfUrl || readableBook.isLocked);
+        let finalUrl = getReadableUrl(readableBook);
 
-        if (needsUnlockedRefresh) {
+        if (!finalUrl && hasPremiumAccess) {
             setIsPaymentInitiating(true);
             setPaymentStatusLabel('Unlocking your full book...');
             const unlockedBook = await waitForUnlockedBook();
@@ -200,6 +217,7 @@ export default function BookDetails() {
             if (unlockedBook) {
                 readableBook = unlockedBook;
                 setSubscriptionFeedback('Premium unlocked. Your full book is ready.');
+                finalUrl = getReadableUrl(unlockedBook);
             } else {
                 setSubscriptionFeedback('Payment received. Your book is still syncing. Please tap again in a moment.');
                 Alert.alert(
@@ -208,20 +226,6 @@ export default function BookDetails() {
                 );
                 return;
             }
-        }
-
-        let pdfUrl = readableBook.pdfUrl;
-        let finalUrl = '';
-
-        if (pdfUrl && pdfUrl.startsWith('http')) {
-            finalUrl = pdfUrl;
-        } else if (pdfUrl) {
-            // Local backend PDF - ensure no double slashes
-            const cleanPath = pdfUrl.replace(/\\/g, '/').replace(/^\//, '');
-            finalUrl = `${IMAGE_BASE_URL}/${cleanPath}`;
-        } else if (readableBook.isDiscovery || readableBook.isbn?.startsWith('GUT-')) {
-            // Gutenberg fallback: Use the direct HTML reading link which is more integrated than the landing page
-            finalUrl = `https://www.gutenberg.org/ebooks/${readableBook.externalId || ''}.html.images`;
         }
 
         if (finalUrl) {
@@ -309,9 +313,9 @@ export default function BookDetails() {
                 prepareRes.data.subscriptionId,
                 prepareRes.data.paymentIntentId,
             );
-            const refreshedBook = await waitForUnlockedBook();
+            const refreshedBook = await fetchBookDetails({ silent: true });
 
-            if (subscriptionActivated || (refreshedBook && !refreshedBook.isLocked)) {
+            if (subscriptionActivated || refreshedBook) {
                 if (refreshedBook) {
                     setBook(refreshedBook);
                 }

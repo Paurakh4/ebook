@@ -76,7 +76,6 @@ export const getBookByIdService = async (bookId, user) => {
                     return bookObj;
                 } else if (userReadBooks.length >= FREE_BOOK_LIMIT) {
                     console.log(`[Book Service] Locking book for ${fullUser.email} (Limit reached)`);
-                    bookObj.pdfUrl = ""; // Remove PDF URL
                     bookObj.isLocked = true;
                     return bookObj;
                 } else {
