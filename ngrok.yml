@@ -1,0 +1,6 @@
+version: "3"
+authtoken: 3B9oxHKFXOhvYQMSi8TRZKETUbM_2jKkCjEHn9ch5ip2jb2ht
+tunnels:
+  unified:
+    proto: http
+    addr: 9999
