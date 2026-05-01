@@ -17,12 +17,21 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 interface RecommendationSectionProps {
     bookId: string;
+    hidePremiumLocks?: boolean;
 }
 
 const IMAGE_BASE_URL = API_BASE_URL.replace('/api', '');
 
 // ─── App Book Card (navigates to BookDetails) ───────────────────────────────
-const AppBookCard = ({ item, onPress }: { item: RecommendedBook; onPress: () => void }) => {
+const AppBookCard = ({
+    item,
+    onPress,
+    hidePremiumLocks,
+}: {
+    item: RecommendedBook;
+    onPress: () => void;
+    hidePremiumLocks?: boolean;
+}) => {
     const coverImageUrl = item.coverImageUrl || '';
     const imageUrl = coverImageUrl.startsWith('http')
         ? coverImageUrl
@@ -39,7 +48,7 @@ const AppBookCard = ({ item, onPress }: { item: RecommendedBook; onPress: () => 
             </View>
 
             {/* Lock badge – top right, only for premium books */}
-            {item.isLocked && (
+            {item.isLocked && !hidePremiumLocks && (
                 <View style={styles.lockBadge}>
                     <MaterialCommunityIcons name="lock" size={10} color="#fff" />
                 </View>
@@ -124,7 +133,10 @@ const DiscoveryBookCard = ({ item, onImageFailed }: { item: RecommendedBook; onI
 
 
 // ─── Main Section ────────────────────────────────────────────────────────────
-const RecommendationSection: React.FC<RecommendationSectionProps> = ({ bookId }) => {
+const RecommendationSection: React.FC<RecommendationSectionProps> = ({
+    bookId,
+    hidePremiumLocks = false,
+}) => {
     const [appBooks, setAppBooks] = useState<RecommendedBook[]>([]);
     const [csvBooks, setCsvBooks] = useState<RecommendedBook[]>([]);
     const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
@@ -191,6 +203,7 @@ const RecommendationSection: React.FC<RecommendationSectionProps> = ({ bookId })
                         renderItem={({ item }) => (
                             <AppBookCard
                                 item={item}
+                                hidePremiumLocks={hidePremiumLocks}
                                 onPress={() =>
                                     router.push({
                                         pathname: '/BookDetails',

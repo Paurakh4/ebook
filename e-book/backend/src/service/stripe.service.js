@@ -10,6 +10,8 @@ import {
 let stripeClient;
 
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "past_due"]);
+const SUCCESSFUL_PAYMENT_INTENT_STATUSES = new Set(["succeeded"]);
+const PENDING_PAYMENT_INTENT_STATUSES = new Set(["processing", "requires_capture"]);
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -39,6 +41,32 @@ const waitForSubscriptionSettlement = async (stripe, subscriptionId, maxAttempts
   }
 
   return latestSubscription;
+};
+
+const waitForPaymentIntentSettlement = async (
+  stripe,
+  paymentIntentId,
+  maxAttempts = 6,
+) => {
+  let latestPaymentIntent = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    latestPaymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (SUCCESSFUL_PAYMENT_INTENT_STATUSES.has(latestPaymentIntent.status)) {
+      return latestPaymentIntent;
+    }
+
+    if (!PENDING_PAYMENT_INTENT_STATUSES.has(latestPaymentIntent.status)) {
+      return latestPaymentIntent;
+    }
+
+    if (attempt < maxAttempts - 1) {
+      await delay(1000);
+    }
+  }
+
+  return latestPaymentIntent;
 };
 
 const getStripeClient = () => {
@@ -412,7 +440,10 @@ export const confirmSubscriptionService = async (
     let paymentSucceeded = false;
 
     if (explicitPaymentIntentId) {
-      const paymentIntent = await stripe.paymentIntents.retrieve(explicitPaymentIntentId);
+      const paymentIntent = await waitForPaymentIntentSettlement(
+        stripe,
+        explicitPaymentIntentId,
+      );
       const paymentIntentCustomerId = getCustomerId(paymentIntent.customer);
 
       if (paymentIntentCustomerId && paymentIntentCustomerId !== customerId) {
@@ -420,16 +451,16 @@ export const confirmSubscriptionService = async (
       }
 
       console.log("[Stripe Confirm] PaymentIntent status (explicit):", paymentIntent.status);
-      paymentSucceeded = paymentIntent.status === "succeeded";
+      paymentSucceeded = SUCCESSFUL_PAYMENT_INTENT_STATUSES.has(paymentIntent.status);
     }
 
     // Strategy 1: Check invoice.payment_intent if present (legacy Stripe API)
     if (!paymentSucceeded && invoice && typeof invoice === "object" && invoice.payment_intent) {
       const pi = typeof invoice.payment_intent === "string"
-        ? await stripe.paymentIntents.retrieve(invoice.payment_intent)
+        ? await waitForPaymentIntentSettlement(stripe, invoice.payment_intent)
         : invoice.payment_intent;
       console.log("[Stripe Confirm] PaymentIntent status (from invoice):", pi.status);
-      paymentSucceeded = pi.status === "succeeded";
+      paymentSucceeded = SUCCESSFUL_PAYMENT_INTENT_STATUSES.has(pi.status);
     }
 
     // Strategy 2: New Stripe API — find PaymentIntent via customer (no invoice.payment_intent)

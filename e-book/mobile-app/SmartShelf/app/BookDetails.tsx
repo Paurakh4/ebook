@@ -35,13 +35,18 @@ export default function BookDetails() {
     const [isFavorite, setIsFavorite] = useState(false);
     const [isSubscriptionModalVisible, setIsSubscriptionModalVisible] = useState(false);
     const [isPaymentInitiating, setIsPaymentInitiating] = useState(false);
+    const [paymentStatusLabel, setPaymentStatusLabel] = useState('Initiating Payment...');
+    const [hasPendingPremiumAccess, setHasPendingPremiumAccess] = useState(false);
+    const [subscriptionFeedback, setSubscriptionFeedback] = useState<string | null>(null);
     const { user, updateUser } = useAuth();
     const router = useRouter();
     const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
     const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const hasPremiumAccess = Boolean(user?.isSubscribed) || hasPendingPremiumAccess;
+    const isBookLocked = Boolean(book?.isLocked) && !hasPremiumAccess;
 
-    const fetchBookDetails = async () => {
+    const fetchBookDetails = async ({ silent = false } = {}) => {
         if (!id) return;
         try {
             const res = await getBookById(id as string);
@@ -50,20 +55,49 @@ export default function BookDetails() {
                 return res.data;
             } else {
                 const errorMsg = res.message || "Book not found";
-                Alert.alert("Notice", errorMsg);
+                if (!silent) {
+                    Alert.alert("Notice", errorMsg);
 
-                if (router.canGoBack()) {
-                    router.back();
-                } else {
-                    router.replace('/(tabs)');
+                    if (router.canGoBack()) {
+                        router.back();
+                    } else {
+                        router.replace('/(tabs)');
+                    }
                 }
             }
         } catch (err) {
             console.error("Fetch details error:", err);
-            if (router.canGoBack()) router.back();
-            else router.replace('/(tabs)');
+            if (!silent) {
+                if (router.canGoBack()) router.back();
+                else router.replace('/(tabs)');
+            }
         } finally {
             setLoading(false);
+        }
+
+        return null;
+    };
+
+    const applyImmediateUnlockUi = (message: string) => {
+        setHasPendingPremiumAccess(true);
+        setSubscriptionFeedback(message);
+        setBook((currentBook: any) =>
+            currentBook
+                ? { ...currentBook, isLocked: false }
+                : currentBook,
+        );
+    };
+
+    const waitForUnlockedBook = async () => {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+            const latestBook = await fetchBookDetails({ silent: true });
+            if (latestBook && !latestBook.isLocked) {
+                return latestBook;
+            }
+
+            if (attempt < 7) {
+                await delay(1200);
+            }
         }
 
         return null;
@@ -73,7 +107,7 @@ export default function BookDetails() {
         subscriptionId: string,
         paymentIntentId?: string,
     ) => {
-        for (let attempt = 0; attempt < 4; attempt += 1) {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
             const confirmRes = await confirmStripeSubscription(subscriptionId, paymentIntentId);
             if (confirmRes.success && confirmRes.data?.isSubscribed) {
                 const profileRes = await getProfile();
@@ -90,16 +124,21 @@ export default function BookDetails() {
                     });
                 }
 
+                setHasPendingPremiumAccess(false);
+                setSubscriptionFeedback('Premium unlocked. Your full book is ready.');
+
                 return true;
             }
 
             const profileRes = await getProfile();
             if (profileRes.success && profileRes.user?.isSubscribed) {
                 await updateUser(profileRes.user);
+                setHasPendingPremiumAccess(false);
+                setSubscriptionFeedback('Premium unlocked. Your full book is ready.');
                 return true;
             }
 
-            if (attempt < 3) {
+            if (attempt < 7) {
                 await delay(1200);
             }
         }
@@ -138,15 +177,43 @@ export default function BookDetails() {
         }
     };
 
-    const handleRead = () => {
+    const handleRead = async () => {
         if (!book) return;
 
-        if (book.isLocked) {
+        if (isBookLocked) {
             setIsSubscriptionModalVisible(true);
             return;
         }
 
-        let pdfUrl = book.pdfUrl;
+        let readableBook = book;
+        const needsUnlockedRefresh =
+            hasPremiumAccess &&
+            !readableBook.isDiscovery &&
+            !readableBook.isbn?.startsWith('GUT-') &&
+            !readableBook.isbn?.startsWith('OL-') &&
+            (!readableBook.pdfUrl || readableBook.isLocked);
+
+        if (needsUnlockedRefresh) {
+            setIsPaymentInitiating(true);
+            setPaymentStatusLabel('Unlocking your full book...');
+            const unlockedBook = await waitForUnlockedBook();
+            setIsPaymentInitiating(false);
+
+            if (unlockedBook) {
+                readableBook = unlockedBook;
+                setHasPendingPremiumAccess(false);
+                setSubscriptionFeedback('Premium unlocked. Your full book is ready.');
+            } else {
+                setSubscriptionFeedback('Payment received. Your book is still syncing. Please tap again in a moment.');
+                Alert.alert(
+                    'Still Unlocking',
+                    'Your payment went through. We are still syncing the full book to this device. Please try again in a moment.',
+                );
+                return;
+            }
+        }
+
+        let pdfUrl = readableBook.pdfUrl;
         let finalUrl = '';
 
         if (pdfUrl && pdfUrl.startsWith('http')) {
@@ -155,18 +222,23 @@ export default function BookDetails() {
             // Local backend PDF - ensure no double slashes
             const cleanPath = pdfUrl.replace(/\\/g, '/').replace(/^\//, '');
             finalUrl = `${IMAGE_BASE_URL}/${cleanPath}`;
-        } else if (book.isDiscovery || book.isbn?.startsWith('GUT-')) {
+        } else if (readableBook.isDiscovery || readableBook.isbn?.startsWith('GUT-')) {
             // Gutenberg fallback: Use the direct HTML reading link which is more integrated than the landing page
-            finalUrl = `https://www.gutenberg.org/ebooks/${book.externalId || ''}.html.images`;
+            finalUrl = `https://www.gutenberg.org/ebooks/${readableBook.externalId || ''}.html.images`;
         }
 
         if (finalUrl) {
             router.push({
                 pathname: '/Reader',
-                params: { url: finalUrl, title: book.title, id: book._id }
+                params: { url: finalUrl, title: readableBook.title, id: readableBook._id }
             });
         } else {
-            Alert.alert("Notice", "A readable format for this book is not available yet.");
+            Alert.alert(
+                'Notice',
+                hasPremiumAccess
+                    ? 'Your subscription is active, but the full book is still syncing. Please try again in a moment.'
+                    : 'A readable format for this book is not available yet.',
+            );
         }
     };
 
@@ -186,6 +258,8 @@ export default function BookDetails() {
     const handleSubscribe = async () => {
         setIsSubscriptionModalVisible(false);
         setIsPaymentInitiating(true);
+        setPaymentStatusLabel('Initiating Payment...');
+        setSubscriptionFeedback(null);
         try {
             const prepareRes = await prepareStripeSubscription();
             if (!prepareRes.success || !prepareRes.data) {
@@ -202,6 +276,8 @@ export default function BookDetails() {
                 Alert.alert("Subscription Active", "Your premium subscription is already active.");
                 return;
             }
+
+            setPaymentStatusLabel('Opening secure checkout...');
 
             const initRes = await initPaymentSheet({
                 merchantDisplayName: "SmartShelf",
@@ -220,6 +296,7 @@ export default function BookDetails() {
                 return;
             }
 
+            setPaymentStatusLabel('Waiting for payment confirmation...');
             const paymentRes = await presentPaymentSheet();
             if (paymentRes.error) {
                 if (paymentRes.error.code !== "Canceled") {
@@ -228,20 +305,29 @@ export default function BookDetails() {
                 return;
             }
 
+            applyImmediateUnlockUi('Payment confirmed. Unlocking your books now...');
+            setPaymentStatusLabel('Unlocking your books...');
+
             const subscriptionActivated = await synchronizeSubscriptionActivation(
                 prepareRes.data.subscriptionId,
                 prepareRes.data.paymentIntentId,
             );
-            const refreshedBook = await fetchBookDetails();
+            const refreshedBook = await waitForUnlockedBook();
 
             if (subscriptionActivated || (refreshedBook && !refreshedBook.isLocked)) {
+                if (refreshedBook) {
+                    setBook(refreshedBook);
+                }
+                setHasPendingPremiumAccess(false);
+                setSubscriptionFeedback('Premium unlocked. You can start reading right away.');
                 Alert.alert("🎉 Success!", "Your premium subscription is now active. Enjoy unlimited reading!");
                 return;
             }
 
+            applyImmediateUnlockUi('Payment received. Your access is syncing now.');
             Alert.alert(
                 "Payment Received",
-                "Your payment went through, but access is still activating. Please reopen this book in a moment.",
+                "Your payment went through. We are still syncing your unlocked access, but the paywall is removed and the app will keep trying.",
             );
         } catch (err) {
             console.error("Subscription error:", err);
@@ -273,7 +359,7 @@ export default function BookDetails() {
             {isPaymentInitiating && (
                 <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255,255,255,0.7)', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }]}>
                     <ActivityIndicator size="large" color="#6B8E23" />
-                    <Text style={{ marginTop: 10, fontWeight: '700', color: '#6B8E23' }}>Initiating Payment...</Text>
+                    <Text style={{ marginTop: 10, fontWeight: '700', color: '#6B8E23' }}>{paymentStatusLabel}</Text>
                 </View>
             )}
 
@@ -320,10 +406,21 @@ export default function BookDetails() {
                     <Text style={styles.description as any}>{book.description}</Text>
                 </View>
 
+                {subscriptionFeedback && (
+                    <View style={styles.subscriptionFeedback as any}>
+                        <MaterialCommunityIcons
+                            name={hasPremiumAccess ? 'check-decagram' : 'clock-outline'}
+                            size={18}
+                            color={hasPremiumAccess ? '#2E7D32' : '#B26A00'}
+                        />
+                        <Text style={styles.subscriptionFeedbackText as any}>{subscriptionFeedback}</Text>
+                    </View>
+                )}
+
                 <TouchableOpacity style={styles.readButton as any} onPress={handleRead}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                        {book.isLocked && <MaterialCommunityIcons name="lock" size={20} color="#FFF" style={{ marginRight: 8 }} />}
-                        <Text style={styles.readButtonText as any}>{book.isLocked ? "Unlock Full Book" : "Read More"}</Text>
+                        {isBookLocked && <MaterialCommunityIcons name="lock" size={20} color="#FFF" style={{ marginRight: 8 }} />}
+                        <Text style={styles.readButtonText as any}>{isBookLocked ? "Unlock Full Book" : "Read More"}</Text>
                     </View>
                 </TouchableOpacity>
 
@@ -357,7 +454,7 @@ export default function BookDetails() {
 
 
 
-                <RecommendationSection bookId={book._id} />
+                <RecommendationSection bookId={book._id} hidePremiumLocks={hasPremiumAccess} />
             </View>
         </ScrollView>
     );
@@ -436,6 +533,25 @@ const styles = StyleSheet.create({
     },
     section: {
         marginTop: 30,
+    },
+    subscriptionFeedback: {
+        marginTop: 20,
+        backgroundColor: '#F0F9E8',
+        borderRadius: 14,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#D7EACB',
+    },
+    subscriptionFeedbackText: {
+        marginLeft: 10,
+        color: '#355B2E',
+        fontSize: 14,
+        fontWeight: '600',
+        flex: 1,
+        lineHeight: 20,
     },
     sectionTitle: {
         fontSize: 20,
